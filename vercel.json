@@ -5,15 +5,15 @@
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
-        "maxLambdaSize": "15mb", // Standard size, adjust if needed
-        "runtime": "python3.9" // Specify Python version (e.g., 3.9, 3.10, 3.11)
+        "maxLambdaSize": "15mb",
+        "runtime": "python3.9"
       }
     }
   ],
   "routes": [
     {
-      "src": "/(.*)", // Match all incoming paths
-      "dest": "app.py" // Route them to your Flask app
+      "src": "/(.*)",
+      "dest": "app.py"
     }
   ]
 }
