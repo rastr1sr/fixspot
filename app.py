@@ -28,13 +28,11 @@ def extract_spotify_track_id(url_string):
     if not url_string:
         return None
     try:
-        # Handle direct ID first (common usage like your-app.com/TRACKID)
         if re.fullmatch(r'[a-zA-Z0-9]{22}', url_string):
              logging.debug(f"Assuming '{url_string}' is a direct Track ID.")
              return url_string
 
         decoded_url = unquote(url_string)
-        # Match standard URLs and URIs
         match = re.search(r'(?:spotify\.com\/track\/|spotify:track:)([a-zA-Z0-9]{22})', decoded_url)
         if match:
             return match.group(1)
@@ -61,7 +59,7 @@ def get_spotify_data(track_id):
 
     original_url = f"https://open.spotify.com/track/{track_id}"
     params = {'url': original_url, 'format': 'json'}
-    headers = {'User-Agent': f'{SERVICE_NAME}/1.0 (Vercel Function)'} # Identify your bot
+    headers = {'User-Agent': f'{SERVICE_NAME}/1.0 (Vercel Function)'}
 
     try:
         response = requests.get(SPOTIFY_OEMBED_URL, params=params, headers=headers, timeout=8)
@@ -81,15 +79,31 @@ def get_spotify_data(track_id):
             logging.error(f"Could not extract embed URL from oEmbed HTML for {track_id}")
             return None
 
+        # Ensure embed URL is HTTPS
         embed_url = embed_match.group(1)
+        if embed_url.startswith("http://"):
+            embed_url = embed_url.replace("http://", "https://", 1)
+        elif not embed_url.startswith("https://"):
+             # If it's somehow relative or missing scheme, assume https
+             logging.warning(f"Embed URL had unexpected format: {embed_url}. Forcing HTTPS assumption.")
+             # This case is unlikely with Spotify oEmbed, but better safe.
+             # You might need a more robust way to handle this if it actually occurs.
+             if "//" in embed_url:
+                 embed_url = "https:" + embed_url.split("//", 1)[1]
+             else: # Cannot determine base, return error
+                 logging.error(f"Cannot determine base for relative embed URL: {embed_url}")
+                 return None
+
+
         width = width_match.group(1) if width_match else "300"
-        height = height_match.group(1) if height_match else "380" # Default to standard embed
+        # Use standard 380px height - seems more reliable for player than 80px
+        height = height_match.group(1) if height_match else "380"
 
         result_data = {
             'title': data.get('title', 'Spotify Track'),
             'thumbnail_url': data.get('thumbnail_url'),
             'original_url': original_url,
-            'embed_url': embed_url,
+            'embed_url': embed_url, # Already ensured HTTPS
             'width': width,
             'height': height,
             'provider_name': data.get('provider_name', 'Spotify'),
@@ -112,14 +126,32 @@ def get_spotify_data(track_id):
         logging.error(f"Error processing oEmbed response for {track_id}: {e}")
         return None
 
+# --- Modified HTML Template ---
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{{ title }}</title>
-<meta property="og:title" content="{{ title }}"><meta property="og:description" content="Listen to {{ title }} on {{ provider_name }}."><meta property="og:site_name" content="{{ service_name }}"><meta property="og:url" content="{{ original_url }}">
-{% if thumbnail_url %}<meta property="og:image" content="{{ thumbnail_url }}"><meta property="og:image:width" content="300"><meta property="og:image:height" content="300">{% endif %}
-<meta property="og:type" content="video.other"><meta property="og:video" content="{{ embed_url }}"><meta property="og:video:secure_url" content="{{ embed_url }}"><meta property="og:video:type" content="text/html"><meta property="og:video:width" content="{{ width }}"><meta property="og:video:height" content="{{ height }}">
-<meta name="twitter:card" content="player"><meta name="twitter:title" content="{{ title }}"><meta name="twitter:description" content="Listen on {{ provider_name }}">{% if your_twitter_handle %}<meta name="twitter:site" content="@{{ your_twitter_handle }}">{% endif %}{% if thumbnail_url %}<meta name="twitter:image" content="{{ thumbnail_url }}">{% endif %}<meta name="twitter:player" content="{{ embed_url }}"><meta name="twitter:player:width" content="{{ width }}"><meta name="twitter:player:height" content="{{ height }}">
-<style>body{font-family:sans-serif;background-color:#191414;color:#fff;padding:20px} a{color:#1DB954}</style></head>
-<body><h1>{{ title }}</h1><p>Track ID: {{ track_id }}</p><p>View on <a href="{{ original_url }}">Spotify</a>.</p></body></html>"""
+<meta property="og:title" content="{{ title }}">
+<meta property="og:description" content="Listen to {{ title }} on {{ provider_name }}.">
+<meta property="og:site_name" content="{{ service_name }}">
+<meta property="og:url" content="{{ original_url }}">
+{% if thumbnail_url %}<meta property="og:image" content="{{ thumbnail_url }}">
+<meta property="og:image:width" content="300">
+<meta property="og:image:height" content="300">{% endif %}
+<meta property="og:type" content="music.song"> <!-- Changed from video.other -->
+<meta property="og:video" content="{{ embed_url }}">
+<meta property="og:video:secure_url" content="{{ embed_url }}"> <!-- Ensure HTTPS URL is used -->
+<meta property="og:video:type" content="text/html">
+<meta property="og:video:width" content="{{ width }}">
+<meta property="og:video:height" content="{{ height }}">
+<meta name="twitter:card" content="player">
+<meta name="twitter:title" content="{{ title }}">
+<meta name="twitter:description" content="Listen on {{ provider_name }}">
+{% if your_twitter_handle %}<meta name="twitter:site" content="@{{ your_twitter_handle }}">{% endif %}
+{% if thumbnail_url %}<meta name="twitter:image" content="{{ thumbnail_url }}">{% endif %}
+<meta name="twitter:player" content="{{ embed_url }}">
+<meta name="twitter:player:width" content="{{ width }}">
+<meta name="twitter:player:height" content="{{ height }}">
+<style>body{font-family:sans-serif;background-color:#191414;color:#fff;padding:20px} a{color:#1DB954}</style>
+</head><body><h1>{{ title }}</h1><p>Track ID: {{ track_id }}</p><p>View on <a href="{{ original_url }}">Spotify</a>.</p></body></html>"""
 
 ERROR_TEMPLATE = """<!DOCTYPE html>
 <html><head><title>Error</title><style>body{font-family:sans-serif;padding:20px}</style></head>
@@ -138,12 +170,9 @@ LANDING_PAGE_TEMPLATE = """<!DOCTYPE html>
 @app.route('/<path:path>')
 def handle_request(path):
     user_agent = request.headers.get('User-Agent', '')
-
-    # Determine potential Spotify input from query or path
     input_value = request.args.get('url', path).strip()
 
     if not input_value:
-        # Show a simple landing/instruction page if no input is provided
         return render_template_string(LANDING_PAGE_TEMPLATE, service_name=SERVICE_NAME, request=request), 200
 
     track_id = extract_spotify_track_id(input_value)
@@ -152,26 +181,22 @@ def handle_request(path):
         logging.info(f"Could not extract valid Spotify track ID from input: '{input_value}'")
         return render_template_string(ERROR_TEMPLATE, message=f"Could not find a valid Spotify Track ID in '{input_value}'. Please provide a full Spotify track URL or just the 22-character ID."), 400
 
-    # Check if the request is from a known bot
     is_bot = any(bot_ua in user_agent for bot_ua in USER_AGENT_BOTS)
 
     if is_bot:
         logging.info(f"Bot detected ({user_agent}), serving embed for track ID: {track_id}")
-        spotify_data = get_spotify_data(track_id)
+        spotify__data = get_spotify_data(track_id) # Corrected variable name
 
-        if spotify_data:
-            html_content = render_template_string(HTML_TEMPLATE, **spotify_data)
+        if spotify_data: # Use corrected variable name
+            html_content = render_template_string(HTML_TEMPLATE, **spotify_data) # Use corrected variable name
             return Response(html_content, mimetype='text/html')
         else:
             logging.warning(f"Could not get Spotify data for bot request {track_id}. Redirecting bot to original URL.")
-            return redirect(f"https://open.spotify.com/track/{track_id}", code=307) # Temporary redirect
+            return redirect(f"https://open.spotify.com/track/{track_id}", code=307)
     else:
-        # Not a known bot, redirect to the original Spotify URL
         logging.info(f"Non-bot user agent detected ({user_agent}), redirecting for track ID: {track_id}")
-        return redirect(f"https://open.spotify.com/track/{track_id}", code=307) # Temporary redirect
+        return redirect(f"https://open.spotify.com/track/{track_id}", code=307)
 
 @app.route('/favicon.ico')
 def favicon():
     return '', 204
-
-# No __main__ block needed for Vercel deployment
